@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audio Transcriber</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel-2: #1f232c;
+    --border: #2a2f3a;
+    --text: #e6e8eb;
+    --muted: #8a93a3;
+    --accent: #4ea1ff;
+    --accent-2: #357de0;
+    --good: #3ddc84;
+    --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, system-ui, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh;
+    display: flex; justify-content: center; padding: 32px 16px;
+  }
+  .wrap { width: 100%; max-width: 760px; }
+  h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 16px;
+  }
+  label { display: block; font-size: 12px; color: var(--muted);
+          margin: 0 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  select, input[type=file], input[type=text] {
+    width: 100%; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: 14px; font-family: inherit;
+  }
+
+  .drop {
+    border: 1.5px dashed var(--border); border-radius: 10px;
+    padding: 28px; text-align: center; color: var(--muted);
+    cursor: pointer; transition: .15s;
+  }
+  .drop.hover, .drop:hover { border-color: var(--accent); color: var(--text); background: var(--panel-2); }
+  .drop strong { color: var(--text); }
+  .drop input { display: none; }
+  .file-info { margin-top: 10px; font-size: 13px; color: var(--text); }
+
+  button {
+    background: var(--accent); color: white; border: none;
+    padding: 11px 18px; font-size: 14px; font-weight: 600;
+    border-radius: 8px; cursor: pointer; font-family: inherit;
+  }
+  button:hover { background: var(--accent-2); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  button.secondary:hover { background: var(--border); }
+
+  .status { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+
+  .transcript {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px; max-height: 420px; overflow-y: auto;
+    white-space: pre-wrap; font-size: 13.5px; line-height: 1.55;
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+  }
+
+  .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .err { color: var(--bad); font-size: 13px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Audio Transcriber</h1>
+  <div class="sub">Powered by Azure AI Speech</div>
+
+  <div class="card" id="upload-card">
+    <label>Audio file</label>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="audio/*,video/*,.m4a,.mp3,.wav,.mp4,.mov,.flac,.ogg">
+      <div><strong>Click to choose</strong> or drag a file here</div>
+      <div style="font-size:12px; margin-top:4px;">m4a, mp3, wav, mp4, etc.</div>
+      <div class="file-info hidden" id="file-info"></div>
+    </label>
+
+    <div style="margin-top: 12px;">
+      <label>Language</label>
+      <select id="language">
+        <option value="auto">Auto-detect (en, zh, de, fr)</option>
+        <option value="en">English</option>
+        <option value="zh">Chinese</option>
+        <option value="de">German</option>
+        <option value="fr">French</option>
+        <option value="es">Spanish</option>
+        <option value="it">Italian</option>
+        <option value="ja">Japanese</option>
+        <option value="ko">Korean</option>
+        <option value="pt">Portuguese</option>
+        <option value="ru">Russian</option>
+        <option value="nl">Dutch</option>
+      </select>
+    </div>
+
+    <div style="margin-top: 16px;">
+      <button id="go" disabled>Transcribe</button>
+    </div>
+    <div class="err hidden" id="error" style="margin-top: 10px;"></div>
+  </div>
+
+  <div class="card hidden" id="progress-card">
+    <div class="status" id="status-text">Queued…</div>
+    <div class="bar"><div id="bar-fill"></div></div>
+  </div>
+
+  <div class="card hidden" id="result-card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <div style="font-weight: 600;">Transcript</div>
+      <div class="actions" style="margin: 0;">
+        <button class="secondary" id="copy-btn">Copy</button>
+        <button class="secondary" id="dl-txt">Download .txt</button>
+        <button class="secondary" id="dl-srt">Download .srt</button>
+        <button class="secondary" id="reset-btn">New file</button>
+      </div>
+    </div>
+    <div class="transcript" id="transcript"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentJob = null;
+let pollTimer = null;
+
+function prettyBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const drop = $("drop");
+const fileInput = $("file");
+fileInput.addEventListener("change", () => onFile(fileInput.files[0]));
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("hover"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("hover"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault(); drop.classList.remove("hover");
+  if (e.dataTransfer.files.length) {
+    fileInput.files = e.dataTransfer.files;
+    onFile(e.dataTransfer.files[0]);
+  }
+});
+
+function onFile(f) {
+  if (!f) return;
+  $("file-info").classList.remove("hidden");
+  $("file-info").textContent = `${f.name}  ·  ${prettyBytes(f.size)}`;
+  $("go").disabled = false;
+}
+
+$("go").addEventListener("click", async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  $("error").classList.add("hidden");
+  $("go").disabled = true;
+
+  const fd = new FormData();
+  fd.append("audio", file);
+  fd.append("language", $("language").value);
+
+  try {
+    const r = await fetch("/api/transcribe", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(`Upload failed: ${r.status}`);
+    const { job_id } = await r.json();
+    currentJob = job_id;
+    $("progress-card").classList.remove("hidden");
+    $("result-card").classList.add("hidden");
+    poll();
+  } catch (e) {
+    showError(e.message);
+    $("go").disabled = false;
+  }
+});
+
+function poll() {
+  pollTimer = setInterval(async () => {
+    if (!currentJob) return;
+    try {
+      const r = await fetch(`/api/status/${currentJob}`);
+      const j = await r.json();
+      updateStatus(j);
+      if (j.status === "done") {
+        clearInterval(pollTimer);
+        const rr = await fetch(`/api/result/${currentJob}`);
+        const { text } = await rr.json();
+        $("transcript").textContent = text.trim();
+        $("result-card").classList.remove("hidden");
+        $("progress-card").classList.add("hidden");
+        $("go").disabled = false;
+      } else if (j.status === "error") {
+        clearInterval(pollTimer);
+        showError(j.error || "transcription failed");
+        $("progress-card").classList.add("hidden");
+        $("go").disabled = false;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, 1500);
+}
+
+function updateStatus(j) {
+  const labels = {
+    queued: "Queued…",
+    converting: "Converting audio…",
+    transcribing: "Transcribing…",
+  };
+  let text = labels[j.status] || j.status;
+  if (j.status === "transcribing" && j.progress_seconds && j.duration) {
+    const m = (s) => `${Math.floor(s / 60)}m${String(Math.floor(s % 60)).padStart(2, "0")}s`;
+    text += ` ${m(j.progress_seconds)} / ${m(j.duration)}`;
+  }
+  $("status-text").textContent = text;
+  $("bar-fill").style.width = `${j.progress_pct || 0}%`;
+}
+
+function showError(msg) {
+  $("error").classList.remove("hidden");
+  $("error").textContent = msg;
+}
+
+$("dl-txt").addEventListener("click", () => {
+  if (currentJob) window.location.href = `/api/download/${currentJob}/txt`;
+});
+$("dl-srt").addEventListener("click", () => {
+  if (currentJob) window.location.href = `/api/download/${currentJob}/srt`;
+});
+$("copy-btn").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("transcript").textContent);
+  const b = $("copy-btn");
+  const old = b.textContent;
+  b.textContent = "Copied"; setTimeout(() => b.textContent = old, 1200);
+});
+$("reset-btn").addEventListener("click", () => {
+  fileInput.value = "";
+  currentJob = null;
+  $("file-info").classList.add("hidden");
+  $("result-card").classList.add("hidden");
+  $("go").disabled = true;
+});
+</script>
+</body>
+</html>
