@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+jobs/
+.env
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+Start Transcriber.command
+README.md
+*.md
