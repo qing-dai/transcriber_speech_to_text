@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -7,7 +8,7 @@ import webbrowser
 from pathlib import Path
 from typing import Dict
 
-import azure.cognitiveservices.speech as speechsdk
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -21,6 +22,8 @@ PORT = 7860
 
 AZURE_SPEECH_KEY = os.environ.get("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = os.environ.get("AZURE_SPEECH_REGION")
+AZURE_SPEECH_ENDPOINT = os.environ.get("AZURE_SPEECH_ENDPOINT")
+DIARIZATION_MAX_SPEAKERS = 6
 
 LANG_MAP = {
     "en": "en-US", "zh": "zh-CN", "de": "de-DE", "fr": "fr-FR",
@@ -53,68 +56,67 @@ def seconds_to_srt_time(s: float) -> str:
     return f"{h:02d}:{m:02d}:{sec_int:02d},{ms:03d}"
 
 
+def format_speaker_line(text: str, speaker) -> str:
+    if speaker is None:
+        return text
+    return f"Speaker {speaker}: {text}"
+
+
 def write_outputs(segments, txt_path: Path, srt_path: Path):
-    txt_path.write_text("\n".join(text for _, _, text in segments) + "\n")
+    txt_path.write_text(
+        "\n".join(format_speaker_line(text, speaker) for _, _, text, speaker in segments) + "\n"
+    )
     with open(srt_path, "w") as f:
-        for i, (start, end, text) in enumerate(segments, 1):
+        for i, (start, end, text, speaker) in enumerate(segments, 1):
             f.write(f"{i}\n")
             f.write(f"{seconds_to_srt_time(start)} --> {seconds_to_srt_time(end)}\n")
-            f.write(f"{text}\n\n")
+            f.write(f"{format_speaker_line(text, speaker)}\n\n")
 
 
 def transcribe_azure(wav_path: Path, language: str, job: dict, duration: float | None):
-    speech_config = speechsdk.SpeechConfig(
-        subscription=AZURE_SPEECH_KEY, region=AZURE_SPEECH_REGION,
-    )
-    audio_config = speechsdk.audio.AudioConfig(filename=str(wav_path))
-
-    if language == "auto":
-        auto_detect = speechsdk.languageconfig.AutoDetectSourceLanguageConfig(
-            languages=AUTO_DETECT_LANGS,
-        )
-        recognizer = speechsdk.SpeechRecognizer(
-            speech_config=speech_config,
-            auto_detect_source_language_config=auto_detect,
-            audio_config=audio_config,
-        )
+    if AZURE_SPEECH_ENDPOINT:
+        base = AZURE_SPEECH_ENDPOINT.rstrip("/")
     else:
-        speech_config.speech_recognition_language = LANG_MAP.get(language, "en-US")
-        recognizer = speechsdk.SpeechRecognizer(
-            speech_config=speech_config, audio_config=audio_config,
+        base = f"https://{AZURE_SPEECH_REGION}.api.cognitive.microsoft.com"
+    url = f"{base}/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+
+    locales = AUTO_DETECT_LANGS if language == "auto" else [LANG_MAP.get(language, "en-US")]
+    definition = {
+        "locales": locales,
+        "profanityFilterMode": "Masked",
+        "diarization": {
+            "enabled": True,
+            "maxSpeakers": DIARIZATION_MAX_SPEAKERS,
+        },
+    }
+
+    job["progress_pct"] = 5
+    with open(wav_path, "rb") as f:
+        resp = requests.post(
+            url,
+            headers={"Ocp-Apim-Subscription-Key": AZURE_SPEECH_KEY},
+            files={
+                "audio": (wav_path.name, f, "audio/wav"),
+                "definition": (None, json.dumps(definition), "application/json"),
+            },
+            timeout=1800,
         )
 
+    if resp.status_code != 200:
+        raise RuntimeError(f"Azure Fast Transcription error: {resp.status_code} {resp.text}")
+
+    data = resp.json()
     segments = []
-    done = threading.Event()
-    error_msg = {"text": None}
+    for phrase in data.get("phrases", []):
+        text = phrase.get("text", "").strip()
+        if not text:
+            continue
+        start = phrase["offsetMilliseconds"] / 1000.0
+        dur = phrase["durationMilliseconds"] / 1000.0
+        speaker = phrase.get("speaker")
+        segments.append((start, start + dur, text, speaker))
 
-    def on_recognized(evt):
-        if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech and evt.result.text:
-            start = evt.result.offset / 10_000_000.0
-            dur = evt.result.duration / 10_000_000.0
-            end = start + dur
-            segments.append((start, end, evt.result.text))
-            job["progress_seconds"] = end
-            if duration:
-                job["progress_pct"] = min(99, int(100 * end / duration))
-
-    def on_canceled(evt):
-        if evt.reason == speechsdk.CancellationReason.Error:
-            error_msg["text"] = f"Azure Speech error: {evt.error_details}"
-        done.set()
-
-    def on_stopped(_evt):
-        done.set()
-
-    recognizer.recognized.connect(on_recognized)
-    recognizer.session_stopped.connect(on_stopped)
-    recognizer.canceled.connect(on_canceled)
-
-    recognizer.start_continuous_recognition()
-    done.wait()
-    recognizer.stop_continuous_recognition()
-
-    if error_msg["text"]:
-        raise RuntimeError(error_msg["text"])
+    job["progress_pct"] = 95
     return segments
 
 
