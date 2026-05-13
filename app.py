@@ -10,8 +10,8 @@ from typing import Dict
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 load_dotenv()
 
@@ -25,6 +25,8 @@ AZURE_SPEECH_REGION = os.environ.get("AZURE_SPEECH_REGION")
 AZURE_SPEECH_ENDPOINT = os.environ.get("AZURE_SPEECH_ENDPOINT")
 DIARIZATION_MAX_SPEAKERS = 6
 
+ALLOWED_USERS = {u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()}
+
 LANG_MAP = {
     "en": "en-US", "zh": "zh-CN", "de": "de-DE", "fr": "fr-FR",
     "es": "es-ES", "it": "it-IT", "ja": "ja-JP", "ko": "ko-KR",
@@ -34,6 +36,22 @@ AUTO_DETECT_LANGS = ["en-US", "zh-CN", "de-DE", "fr-FR"]
 
 app = FastAPI()
 jobs: Dict[str, dict] = {}
+
+
+@app.middleware("http")
+async def github_allowlist(request: Request, call_next):
+    if not ALLOWED_USERS:
+        return await call_next(request)
+    username = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+    if not username:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    if username not in ALLOWED_USERS:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": f"User '{username}' is not on the allowlist."},
+        )
+    print(f"[auth] user={username} path={request.url.path}")
+    return await call_next(request)
 
 
 def probe_duration(path: Path) -> float | None:
