@@ -18,14 +18,8 @@ jobs:
   build:
     name: Build and push image
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.set-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Compute short commit SHA as image tag
-        id: set-tag
-        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -39,7 +33,7 @@ jobs:
 
       - name: Build and push (linux/amd64)
         run: |
-          IMAGE="${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ steps.set-tag.outputs.tag }}"
+          IMAGE="${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ github.sha }}"
           docker build --platform linux/amd64 -t "$IMAGE" .
           docker push "$IMAGE"
 
@@ -61,7 +55,7 @@ jobs:
           az containerapp update \
             --name transcriber-staging \
             --resource-group "$RG" \
-            --image "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ needs.build.outputs.image_tag }}"
+            --image "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ github.sha }}"
 
   deploy-production:
     name: Deploy to production
@@ -81,4 +75,4 @@ jobs:
           az containerapp update \
             --name transcriber-prod \
             --resource-group "$RG" \
-            --image "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ needs.build.outputs.image_tag }}"
+            --image "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ github.sha }}"
